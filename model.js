@@ -243,10 +243,34 @@
     async function loadModel() {
       const st = document.getElementById("loadstatus");
       try {
-        st.textContent = "downloading weights…";
-        const r = await fetch("model_weights.json");
-        if (!r.ok) throw new Error("fetch " + r.status);
-        const raw = await r.json();
+        st.textContent = "loading model…";
+        let raw = null;
+        // 1) try a single bundled file (Netlify / local drag-drop deploy)
+        try {
+          const r = await fetch("model_weights.json");
+          if (r.ok) raw = await r.json();
+        } catch (e) {}
+        // 2) else fetch chunked parts (GitHub Pages mirror, where the 2.4MB
+        //    model is split into ~12 small files served same-origin)
+        if (!raw) {
+          st.textContent = "fetching model parts…";
+          const r0 = await fetch("model_part_00.json");
+          if (!r0.ok) throw new Error("no model_weights.json and no model_part_00.json");
+          const p0 = await r0.json();
+          const total = p0.total;
+          raw = {
+            config: p0.config, vocab: p0.vocab, n_params: p0.n_params,
+            best_val_loss: p0.best_val_loss, quantization: p0.quantization,
+            weights: Object.assign({}, p0.weights),
+          };
+          for (let i = 1; i < total; i++) {
+            const r = await fetch("model_part_" + String(i).padStart(2, "0") + ".json");
+            if (!r.ok) throw new Error("missing part " + i);
+            const p = await r.json();
+            Object.assign(raw.weights, p.weights);
+            st.textContent = "fetching model parts… " + (i + 1) + "/" + total;
+          }
+        }
         st.textContent = "dequantizing int8 → float32…";
         await new Promise(r => setTimeout(r, 10));
         const W = decodeWeights(raw.weights);
@@ -258,8 +282,21 @@
         st.textContent = "✓ model ready — all " + raw.n_params.toLocaleString() + " params live in your browser";
         document.getElementById("go").disabled = false;
       } catch (e) {
-        st.style.color = "#f08080";
-        st.textContent = "✗ failed to load: " + e.message;
+        if (String(e.message).indexOf("no model_weights.json") !== -1) {
+          // this mirror doesn't bundle the 2.3MB trained weights — point the
+          // visitor to the one-drag publish instead of showing a raw error
+          st.style.color = "var(--warm)";
+          st.textContent = "";
+          const info = document.createElement("span");
+          info.innerHTML = "ℹ This live mirror doesn't bundle the 2.3MB trained weights. " +
+            "To run the model, take <b>tinymind-gpt-site.zip</b> and drag it onto " +
+            "<a href=\"https://app.netlify.com/drop\" target=\"_blank\" rel=\"noopener\">app.netlify.com/drop</a> — " +
+            "you get a fully working URL in seconds.";
+          st.appendChild(info);
+        } else {
+          st.style.color = "#f08080";
+          st.textContent = "✗ failed to load: " + e.message;
+        }
       }
     }
 
